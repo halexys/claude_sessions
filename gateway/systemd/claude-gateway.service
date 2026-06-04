@@ -1,0 +1,14 @@
+[Unit]
+Description=Claude Mobile Gateway
+After=network.target
+
+[Service]
+User=claude-tunnel
+WorkingDirectory=/home/claude-tunnel/gateway
+EnvironmentFile=/home/claude-tunnel/gateway/.env
+ExecStart=/usr/bin/node gateway.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

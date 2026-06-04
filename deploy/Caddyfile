@@ -1,0 +1,38 @@
+# Caddy site config for the Claude Mobile gateway.
+#
+# Place this inside your main Caddyfile or include it. Replace
+# `claude.example.com` with your real domain. Caddy auto-issues a TLS cert.
+#
+# Layout:
+#   /login, /setup, /api/*, /socket.io/*, /claim-invite, /firebase-config
+#   are proxied to the Node gateway (localhost:3000).
+#   Everything else is served as static files from /var/www/claude-mobile
+#   (the React app bundle, version.json, app.apk, install.sh, server.tar.gz).
+
+claude.example.com {
+    encode gzip zstd
+
+    handle /login           { reverse_proxy localhost:3000 }
+    handle /setup           { reverse_proxy localhost:3000 }
+    handle /api/*           { reverse_proxy localhost:3000 }
+    handle /socket.io/*     { reverse_proxy localhost:3000 }
+    handle /claim-invite    { reverse_proxy localhost:3000 }
+    handle /firebase-config { reverse_proxy localhost:3000 }
+
+    handle {
+        root * /var/www/claude-mobile
+
+        # CORS for the Capacitor WebView (origin: capacitor://localhost)
+        header Access-Control-Allow-Origin  "*"
+        header Access-Control-Allow-Methods "GET, OPTIONS"
+
+        @nocache path /index.html /manifest.json /version.json
+        header @nocache Cache-Control "no-cache, no-store, must-revalidate"
+
+        @hashed path_regexp \.(js|css|woff2?|png|svg|ico)$
+        header @hashed Cache-Control "public, max-age=31536000, immutable"
+
+        try_files {path} /index.html
+        file_server
+    }
+}
