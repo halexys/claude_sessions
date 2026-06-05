@@ -6,10 +6,12 @@ const jwt       = require('jsonwebtoken')
 const crypto    = require('crypto')
 const fs        = require('fs')
 const path      = require('path')
+const net       = require('net')
 
 const PORT         = parseInt(process.env.PORT || '3000')
 const JWT_SECRET   = process.env.JWT_SECRET
 const SETUP_SECRET = process.env.SETUP_SECRET
+const ADMIN_SECRET = process.env.ADMIN_SECRET
 const VPS_HOST     = process.env.VPS_HOST
 
 if (!JWT_SECRET || !SETUP_SECRET || !VPS_HOST) {
@@ -142,6 +144,164 @@ app.get('/firebase-config', (req, res) => {
   const file = path.join(__dirname, 'firebase-service-account.json')
   if (!fs.existsSync(file)) return res.status(404).json({ error: 'Not found' })
   res.sendFile(file)
+})
+
+// ── Admin ─────────────────────────────────────────────────────────────────────
+
+// Simple in-memory rate limiter (no extra dependency)
+const _adminHits = new Map()
+function adminRateLimit(req, res, next) {
+  const ip  = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim()
+  const key = `${ip}:${Math.floor(Date.now() / 60000)}`
+  const hits = (_adminHits.get(key) || 0) + 1
+  _adminHits.set(key, hits)
+  if (hits === 1) setTimeout(() => _adminHits.delete(key), 70000)
+  if (hits > 60) return res.status(429).json({ error: 'Too many requests' })
+  next()
+}
+
+function requireAdmin(req, res, next) {
+  if (!ADMIN_SECRET) return res.status(503).json({ error: 'ADMIN_SECRET not configured in .env' })
+  const auth = req.headers.authorization || ''
+  if (!auth.startsWith('Bearer ') || auth.slice(7) !== ADMIN_SECRET)
+    return res.status(401).json({ error: 'Unauthorized' })
+  next()
+}
+
+// Check if a local TCP port has an active tunnel
+function portOpen(port) {
+  return new Promise(resolve => {
+    const sock = net.connect(port, '127.0.0.1')
+    sock.once('connect', () => { sock.destroy(); resolve(true) })
+    sock.once('error',   () => resolve(false))
+    sock.setTimeout(1200, () => { sock.destroy(); resolve(false) })
+  })
+}
+
+// Next free port suggestion
+function nextFreePort() {
+  const used = new Set([
+    ...Object.values(loadInvites()).map(v => v.tunnelPort),
+    ...Object.values(loadRegistry()).map(v => v.tunnelPort),
+  ])
+  let p = 8765
+  while (used.has(p)) p++
+  return p
+}
+
+// Serve admin UI (security headers, no caching)
+app.get(['/admin', '/admin/'], (req, res) => {
+  res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'")
+  res.setHeader('X-Frame-Options', 'DENY')
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.setHeader('Cache-Control', 'no-store')
+  res.sendFile(path.join(__dirname, 'admin.html'))
+})
+
+// GET /admin/api/status — overview
+app.get('/admin/api/status', adminRateLimit, requireAdmin, async (req, res) => {
+  const invites  = loadInvites()
+  const registry = loadRegistry()
+  const ports    = [...new Set(Object.values(registry).map(e => e.tunnelPort))]
+  const checks   = await Promise.all(ports.map(p => portOpen(p).then(ok => [p, ok])))
+  res.json({
+    invites:  Object.keys(invites).length,
+    pcs:      Object.keys(registry).length,
+    online:   checks.filter(([, ok]) => ok).length,
+    tunnels:  Object.fromEntries(checks),
+    nextPort: nextFreePort(),
+  })
+})
+
+// GET /admin/api/pcs — registered PCs (no password hashes)
+app.get('/admin/api/pcs', adminRateLimit, requireAdmin, async (req, res) => {
+  const registry = loadRegistry()
+  const list = await Promise.all(Object.entries(registry).map(async ([, e]) => ({
+    pcId:      e.pcId,
+    port:      e.tunnelPort,
+    updatedAt: e.updatedAt,
+    online:    await portOpen(e.tunnelPort),
+  })))
+  list.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
+  res.json(list)
+})
+
+// DELETE /admin/api/pcs/:pcId — revoke a PC (it must re-install to reconnect)
+app.delete('/admin/api/pcs/:pcId', adminRateLimit, requireAdmin, (req, res) => {
+  const pcId = String(req.params.pcId).slice(0, 128)
+  const registry = loadRegistry()
+  let found = false
+  for (const [hash, e] of Object.entries(registry)) {
+    if (e.pcId === pcId) { delete registry[hash]; found = true }
+  }
+  if (!found) return res.status(404).json({ error: 'Not found' })
+  saveRegistry(registry)
+  console.log(`[admin] revoked PC ${pcId}`)
+  res.json({ ok: true })
+})
+
+// GET /admin/api/invites
+app.get('/admin/api/invites', adminRateLimit, requireAdmin, (req, res) => {
+  const invites = loadInvites()
+  const list = Object.entries(invites).map(([code, v]) => ({ code, ...v }))
+  list.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
+  res.json(list)
+})
+
+// POST /admin/api/invites — create invite
+app.post('/admin/api/invites', adminRateLimit, requireAdmin, parseJson, (req, res) => {
+  const { username, tunnelPort } = req.body || {}
+  if (!username || !/^[a-zA-Z0-9_-]{1,32}$/.test(username))
+    return res.status(400).json({ error: 'username must be 1-32 chars: letters, numbers, _ or -' })
+  const port = parseInt(tunnelPort, 10)
+  if (!port || port < 1024 || port > 65535)
+    return res.status(400).json({ error: 'tunnelPort must be 1024–65535' })
+
+  const invites  = loadInvites()
+  const registry = loadRegistry()
+  const usedPorts = new Set([
+    ...Object.values(invites).map(v => v.tunnelPort),
+    ...Object.values(registry).map(v => v.tunnelPort),
+  ])
+  if (usedPorts.has(port))
+    return res.status(409).json({ error: `Port ${port} already assigned` })
+
+  const code = crypto.randomBytes(12).toString('hex')
+  invites[code] = { username, tunnelPort: port, used: false, createdAt: new Date().toISOString() }
+  saveInvites(invites)
+  console.log(`[admin] invite created for ${username} on port ${port}`)
+  res.json({ code, username, tunnelPort: port })
+})
+
+// DELETE /admin/api/invites/:code — revoke invite + remove SSH key + registry entry
+app.delete('/admin/api/invites/:code', adminRateLimit, requireAdmin, (req, res) => {
+  const code = String(req.params.code)
+  if (!/^[a-f0-9]{24}$/.test(code)) return res.status(400).json({ error: 'Invalid code format' })
+
+  const invites = loadInvites()
+  const entry   = invites[code]
+  if (!entry) return res.status(404).json({ error: 'Invite not found' })
+
+  // Remove SSH key line for this port from authorized_keys
+  try {
+    const ak       = fs.readFileSync(AUTHORIZED_KEYS, 'utf8')
+    const filtered = ak.split('\n')
+      .filter(l => !l.includes(`permitopen="localhost:${entry.tunnelPort}"`))
+      .join('\n')
+    fs.writeFileSync(AUTHORIZED_KEYS, filtered)
+  } catch {}
+
+  // Remove any registry entries for this port
+  const registry = loadRegistry()
+  for (const [hash, e] of Object.entries(registry)) {
+    if (e.tunnelPort === entry.tunnelPort) delete registry[hash]
+  }
+  saveRegistry(registry)
+
+  delete invites[code]
+  saveInvites(invites)
+  console.log(`[admin] revoked invite ${code} (${entry.username}, port ${entry.tunnelPort})`)
+  res.json({ ok: true })
 })
 
 // ── Helpers JWT ───────────────────────────────────────────────────────────────

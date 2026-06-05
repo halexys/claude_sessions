@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Claude Mobile Admin</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0f172a;--surface:#1e293b;--border:#334155;--text:#e2e8f0;
+  --muted:#94a3b8;--accent:#6366f1;--green:#22c55e;--red:#ef4444;
+  --yellow:#eab308;--radius:8px;--font:system-ui,-apple-system,sans-serif
+}
+body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:100vh;font-size:14px}
+h1{font-size:1.1rem;font-weight:600}
+h2{font-size:.9rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+
+/* Layout */
+#app{display:flex;flex-direction:column;min-height:100vh}
+header{background:var(--surface);border-bottom:1px solid var(--border);padding:12px 20px;
+  display:flex;align-items:center;justify-content:space-between;gap:12px}
+header .brand{display:flex;align-items:center;gap:8px}
+header .brand svg{opacity:.7}
+#status-dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex-shrink:0}
+#status-dot.online{background:var(--green)}
+main{flex:1;padding:20px;max-width:1000px;width:100%;margin:0 auto}
+
+/* Login */
+#login{display:flex;align-items:center;justify-content:center;flex:1;padding:40px 20px}
+.login-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:32px;width:100%;max-width:380px;display:flex;flex-direction:column;gap:16px}
+.login-card h1{text-align:center}
+.login-card p{color:var(--muted);text-align:center;font-size:.85rem}
+
+/* Form elements */
+label{display:block;font-size:.8rem;font-weight:500;color:var(--muted);margin-bottom:4px}
+input,select{width:100%;background:#0f172a;border:1px solid var(--border);border-radius:6px;
+  padding:8px 10px;color:var(--text);font-size:.9rem;outline:none}
+input:focus,select:focus{border-color:var(--accent)}
+.field{display:flex;flex-direction:column}
+.row{display:flex;gap:10px}
+.row .field{flex:1}
+
+/* Buttons */
+btn,button,.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  border:none;border-radius:6px;padding:8px 14px;font-size:.85rem;font-weight:500;
+  cursor:pointer;transition:opacity .15s;outline:none;text-decoration:none}
+button:hover,.btn:hover{opacity:.85}
+button:disabled,.btn:disabled{opacity:.4;cursor:default}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-danger{background:var(--red);color:#fff;padding:4px 10px;font-size:.8rem}
+.btn-ghost{background:transparent;color:var(--muted);border:1px solid var(--border)}
+.btn-full{width:100%}
+
+/* Tabs */
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:20px}
+.tab{background:none;border:none;border-bottom:2px solid transparent;padding:10px 16px;
+  color:var(--muted);cursor:pointer;font-size:.9rem;font-weight:500;margin-bottom:-1px}
+.tab.active{color:var(--text);border-bottom-color:var(--accent)}
+
+/* Stats row */
+.stats{display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap}
+.stat{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:14px 18px;flex:1;min-width:110px}
+.stat .val{font-size:1.6rem;font-weight:700;line-height:1}
+.stat .lbl{color:var(--muted);font-size:.75rem;margin-top:4px}
+
+/* Table */
+.table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;padding:8px 10px;font-size:.75rem;font-weight:600;color:var(--muted);
+  text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--border)}
+td{padding:10px 10px;border-bottom:1px solid #1e293b;vertical-align:middle;font-size:.85rem}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:rgba(255,255,255,.02)}
+
+/* Badges */
+.badge{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:20px;font-size:.75rem;font-weight:600}
+.badge.green{background:rgba(34,197,94,.15);color:var(--green)}
+.badge.red{background:rgba(239,68,68,.15);color:var(--red)}
+.badge.yellow{background:rgba(234,179,8,.15);color:var(--yellow)}
+.badge.gray{background:rgba(148,163,184,.1);color:var(--muted)}
+.dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex-shrink:0}
+
+/* Code */
+code,.code{font-family:ui-monospace,monospace;font-size:.8rem;background:#0f172a;
+  padding:2px 5px;border-radius:4px;color:#a5b4fc;word-break:break-all}
+.code-block{background:#0f172a;border:1px solid var(--border);border-radius:6px;
+  padding:12px;margin:8px 0;position:relative;overflow:auto}
+.code-block pre{font-family:ui-monospace,monospace;font-size:.8rem;color:#a5b4fc;
+  white-space:pre-wrap;word-break:break-all}
+.copy-btn{position:absolute;top:8px;right:8px;background:var(--surface);border:1px solid var(--border);
+  border-radius:4px;padding:3px 8px;font-size:.75rem;cursor:pointer;color:var(--muted)}
+.copy-btn:hover{color:var(--text)}
+
+/* Alert */
+.alert{padding:10px 14px;border-radius:6px;margin-bottom:12px;font-size:.85rem;display:none}
+.alert.err{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);color:#fca5a5}
+.alert.ok{background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.3);color:#86efac}
+.alert.show{display:block}
+
+/* Create form card */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px}
+
+/* Mono small */
+.mono{font-family:ui-monospace,monospace;font-size:.8rem}
+
+/* Empty state */
+.empty{padding:40px;text-align:center;color:var(--muted)}
+
+/* Loading spinner */
+.spin{display:inline-block;width:14px;height:14px;border:2px solid var(--border);
+  border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Toast */
+#toast{position:fixed;bottom:20px;right:20px;background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--radius);padding:10px 16px;font-size:.85rem;opacity:0;
+  transition:opacity .2s;pointer-events:none;max-width:280px}
+#toast.show{opacity:1}
+</style>
+</head>
+<body>
+<div id="app">
+
+<!-- Login screen -->
+<div id="login">
+  <div class="login-card">
+    <div style="display:flex;justify-content:center;margin-bottom:4px">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2">
+        <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+      </svg>
+    </div>
+    <h1>Claude Mobile</h1>
+    <p>Ingresa el ADMIN_SECRET para continuar</p>
+    <div id="login-err" class="alert err"></div>
+    <div class="field">
+      <label for="secret-input">Admin Secret</label>
+      <input id="secret-input" type="password" placeholder="••••••••••••••••" autocomplete="current-password">
+    </div>
+    <button class="btn btn-primary btn-full" id="login-btn" onclick="doLogin()">Entrar</button>
+  </div>
+</div>
+
+<!-- Dashboard -->
+<div id="dashboard" style="display:none;flex-direction:column;min-height:100vh">
+  <header>
+    <div class="brand">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+      </svg>
+      <h1>Claude Mobile Admin</h1>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px">
+      <span id="status-summary" style="font-size:.8rem;color:var(--muted)"></span>
+      <div id="status-dot"></div>
+      <button class="btn btn-ghost" style="padding:5px 10px;font-size:.8rem" onclick="logout()">Salir</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- Stats -->
+    <div class="stats">
+      <div class="stat"><div class="val" id="stat-pcs">–</div><div class="lbl">PCs registradas</div></div>
+      <div class="stat"><div class="val" id="stat-online">–</div><div class="lbl">En linea ahora</div></div>
+      <div class="stat"><div class="val" id="stat-invites">–</div><div class="lbl">Invites totales</div></div>
+      <div class="stat"><div class="val" id="stat-port">–</div><div class="lbl">Siguiente puerto</div></div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="tabs">
+      <button class="tab active" onclick="switchTab('pcs', this)">PCs conectadas</button>
+      <button class="tab" onclick="switchTab('invites', this)">Invites</button>
+      <button class="tab" onclick="switchTab('create', this)">+ Nuevo invite</button>
+    </div>
+
+    <!-- Tab: PCs -->
+    <div id="tab-pcs">
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>PC / Hostname</th><th>Puerto</th><th>Estado</th><th>Ultima conexion</th><th></th>
+          </tr></thead>
+          <tbody id="pcs-body"><tr><td colspan="5" class="empty">Cargando...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Tab: Invites -->
+    <div id="tab-invites" style="display:none">
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Usuario</th><th>Puerto</th><th>Codigo</th><th>Estado</th><th>Creado</th><th></th>
+          </tr></thead>
+          <tbody id="invites-body"><tr><td colspan="6" class="empty">Cargando...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Tab: Create invite -->
+    <div id="tab-create" style="display:none">
+      <div class="card" style="max-width:480px">
+        <h2 style="margin-bottom:16px">Crear invite</h2>
+        <div id="create-err" class="alert err"></div>
+        <div id="create-ok" class="alert ok"></div>
+        <div style="display:flex;flex-direction:column;gap:12px">
+          <div class="field">
+            <label>Nombre de usuario</label>
+            <input id="new-username" type="text" placeholder="pedro" maxlength="32">
+          </div>
+          <div class="field">
+            <label>Puerto del tunel</label>
+            <input id="new-port" type="number" min="1024" max="65535" placeholder="8771">
+          </div>
+          <button class="btn btn-primary" onclick="createInvite()">Crear invite</button>
+        </div>
+      </div>
+
+      <!-- Result card shown after creation -->
+      <div class="card" id="invite-result" style="display:none;max-width:600px">
+        <h2 style="margin-bottom:12px">Invite creado</h2>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div><span style="color:var(--muted);font-size:.8rem">Linux</span>
+            <div class="code-block">
+              <pre id="cmd-linux"></pre>
+              <button class="copy-btn" onclick="copyCode('cmd-linux',this)">copiar</button>
+            </div>
+          </div>
+          <div><span style="color:var(--muted);font-size:.8rem">Windows</span>
+            <div class="code-block">
+              <pre id="cmd-win"></pre>
+              <button class="copy-btn" onclick="copyCode('cmd-win',this)">copiar</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────────
+let TOKEN = sessionStorage.getItem('admin_token') || ''
+const GW  = window.location.origin
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function api(method, path, body) {
+  return fetch(GW + '/admin/api' + path, {
+    method,
+    headers: {
+      'Authorization': 'Bearer ' + TOKEN,
+      'Content-Type':  'application/json',
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  }).then(async r => {
+    const data = await r.json().catch(() => ({}))
+    if (!r.ok) throw new Error(data.error || r.statusText)
+    return data
+  })
+}
+
+function esc(s) {
+  const d = document.createElement('div')
+  d.textContent = String(s ?? '')
+  return d.innerHTML
+}
+
+function td(text, cls) {
+  const el = document.createElement('td')
+  el.textContent = text ?? ''
+  if (cls) el.className = cls
+  return el
+}
+
+function showToast(msg, ok = true) {
+  const t = document.getElementById('toast')
+  t.textContent = msg
+  t.style.borderColor = ok ? 'rgba(34,197,94,.4)' : 'rgba(239,68,68,.4)'
+  t.classList.add('show')
+  setTimeout(() => t.classList.remove('show'), 2500)
+}
+
+function fmtDate(s) {
+  if (!s) return '–'
+  const d = new Date(s)
+  return d.toLocaleDateString('es', { day:'2-digit', month:'short', year:'2-digit' }) +
+    ' ' + d.toLocaleTimeString('es', { hour:'2-digit', minute:'2-digit' })
+}
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+async function doLogin() {
+  const inp = document.getElementById('secret-input')
+  const err = document.getElementById('login-err')
+  err.classList.remove('show')
+  TOKEN = inp.value.trim()
+  if (!TOKEN) return
+  try {
+    await api('GET', '/status')
+    sessionStorage.setItem('admin_token', TOKEN)
+    document.getElementById('login').style.display = 'none'
+    document.getElementById('dashboard').style.display = 'flex'
+    loadAll()
+  } catch (e) {
+    err.textContent = e.message === 'Unauthorized' ? 'Secreto incorrecto' : e.message
+    err.classList.add('show')
+    TOKEN = ''
+  }
+}
+
+function logout() {
+  sessionStorage.removeItem('admin_token')
+  TOKEN = ''
+  document.getElementById('login').style.display = 'flex'
+  document.getElementById('dashboard').style.display = 'none'
+  document.getElementById('secret-input').value = ''
+}
+
+document.getElementById('secret-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doLogin()
+})
+
+// ── Tabs ──────────────────────────────────────────────────────────────────────
+function switchTab(name, btn) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'))
+  btn.classList.add('active')
+  ;['pcs','invites','create'].forEach(t => {
+    document.getElementById('tab-'+t).style.display = t === name ? '' : 'none'
+  })
+  if (name === 'pcs')     loadPCs()
+  if (name === 'invites') loadInvites()
+  if (name === 'create')  prepareCreate()
+}
+
+// ── Status ────────────────────────────────────────────────────────────────────
+async function loadStatus() {
+  try {
+    const s = await api('GET', '/status')
+    document.getElementById('stat-pcs').textContent     = s.pcs
+    document.getElementById('stat-online').textContent  = s.online
+    document.getElementById('stat-invites').textContent = s.invites
+    document.getElementById('stat-port').textContent    = s.nextPort
+    document.getElementById('status-summary').textContent = s.online + '/' + s.pcs + ' online'
+    const dot = document.getElementById('status-dot')
+    dot.className = s.online > 0 ? 'online' : ''
+  } catch {}
+}
+
+// ── PCs ───────────────────────────────────────────────────────────────────────
+async function loadPCs() {
+  const tbody = document.getElementById('pcs-body')
+  tbody.innerHTML = '<tr><td colspan="5" class="empty"><div class="spin"></div></td></tr>'
+  try {
+    const list = await api('GET', '/pcs')
+    if (!list.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">Sin PCs registradas</td></tr>'
+      return
+    }
+    tbody.innerHTML = ''
+    for (const pc of list) {
+      const tr = document.createElement('tr')
+      tr.appendChild(td(pc.pcId))
+      tr.appendChild(td(pc.port))
+      const statusTd = document.createElement('td')
+      const badge = document.createElement('span')
+      badge.className = 'badge ' + (pc.online ? 'green' : 'red')
+      const dot = document.createElement('span'); dot.className = 'dot'
+      badge.appendChild(dot)
+      badge.appendChild(document.createTextNode(pc.online ? 'Online' : 'Offline'))
+      statusTd.appendChild(badge)
+      tr.appendChild(statusTd)
+      tr.appendChild(td(fmtDate(pc.updatedAt)))
+      const actionTd = document.createElement('td')
+      const btn = document.createElement('button')
+      btn.className = 'btn btn-danger'
+      btn.textContent = 'Revocar'
+      btn.onclick = () => revokePC(pc.pcId, btn)
+      actionTd.appendChild(btn)
+      tr.appendChild(actionTd)
+      tbody.appendChild(tr)
+    }
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">' + esc(e.message) + '</td></tr>'
+  }
+}
+
+async function revokePC(pcId, btn) {
+  if (!confirm('Revocar "' + pcId + '"?\nEl usuario debera reinstalar para reconectarse.')) return
+  btn.disabled = true
+  try {
+    await api('DELETE', '/pcs/' + encodeURIComponent(pcId))
+    showToast('PC revocada')
+    loadPCs()
+    loadStatus()
+  } catch (e) {
+    showToast(e.message, false)
+    btn.disabled = false
+  }
+}
+
+// ── Invites ───────────────────────────────────────────────────────────────────
+async function loadInvites() {
+  const tbody = document.getElementById('invites-body')
+  tbody.innerHTML = '<tr><td colspan="6" class="empty"><div class="spin"></div></td></tr>'
+  try {
+    const list = await api('GET', '/invites')
+    if (!list.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty">Sin invites</td></tr>'
+      return
+    }
+    tbody.innerHTML = ''
+    for (const inv of list) {
+      const tr = document.createElement('tr')
+      tr.appendChild(td(inv.username))
+      tr.appendChild(td(inv.tunnelPort))
+
+      // Code: show masked, with copy button
+      const codeTd = document.createElement('td')
+      const codeSpan = document.createElement('code')
+      codeSpan.className = 'code'
+      codeSpan.textContent = inv.used ? '(usado)' : inv.code.slice(0,8) + '...'
+      codeSpan.title = inv.code
+      codeTd.appendChild(codeSpan)
+      if (!inv.used) {
+        const cp = document.createElement('button')
+        cp.style.cssText = 'background:none;border:none;cursor:pointer;color:var(--muted);margin-left:4px;padding:0;font-size:.8rem'
+        cp.textContent = '📋'
+        cp.title = 'Copiar codigo'
+        cp.onclick = () => { navigator.clipboard.writeText(inv.code); showToast('Copiado') }
+        codeTd.appendChild(cp)
+      }
+      tr.appendChild(codeTd)
+
+      const statusTd = document.createElement('td')
+      const badge = document.createElement('span')
+      if (inv.used) {
+        badge.className = 'badge green'; badge.textContent = 'Usado'
+        if (inv.hostname) {
+          badge.textContent = 'Usado – ' + inv.hostname
+        }
+      } else {
+        badge.className = 'badge yellow'; badge.textContent = 'Pendiente'
+      }
+      statusTd.appendChild(badge)
+      tr.appendChild(statusTd)
+
+      tr.appendChild(td(fmtDate(inv.createdAt)))
+
+      const actionTd = document.createElement('td')
+      const btn = document.createElement('button')
+      btn.className = 'btn btn-danger'
+      btn.textContent = 'Revocar'
+      btn.onclick = () => revokeInvite(inv.code, inv.username, btn)
+      actionTd.appendChild(btn)
+      tr.appendChild(actionTd)
+
+      tbody.appendChild(tr)
+    }
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty">' + esc(e.message) + '</td></tr>'
+  }
+}
+
+async function revokeInvite(code, username, btn) {
+  if (!confirm('Revocar invite de "' + username + '"?\nSi ya estaba instalado se eliminara su clave SSH y registro.')) return
+  btn.disabled = true
+  try {
+    await api('DELETE', '/invites/' + code)
+    showToast('Invite revocado')
+    loadInvites()
+    loadStatus()
+  } catch (e) {
+    showToast(e.message, false)
+    btn.disabled = false
+  }
+}
+
+// ── Create invite ─────────────────────────────────────────────────────────────
+async function prepareCreate() {
+  document.getElementById('invite-result').style.display = 'none'
+  document.getElementById('create-err').classList.remove('show')
+  document.getElementById('create-ok').classList.remove('show')
+  try {
+    const s = await api('GET', '/status')
+    document.getElementById('new-port').value = s.nextPort || ''
+  } catch {}
+}
+
+async function createInvite() {
+  const username   = document.getElementById('new-username').value.trim()
+  const tunnelPort = parseInt(document.getElementById('new-port').value, 10)
+  const err        = document.getElementById('create-err')
+  err.classList.remove('show')
+  document.getElementById('invite-result').style.display = 'none'
+
+  if (!username) { err.textContent = 'Nombre requerido'; err.classList.add('show'); return }
+  if (!tunnelPort) { err.textContent = 'Puerto requerido'; err.classList.add('show'); return }
+
+  try {
+    const result = await api('POST', '/invites', { username, tunnelPort })
+    // Build install commands
+    const linuxCmd  = 'curl -fsSL ' + GW + '/install.sh | bash -s -- ' + result.code
+    const winCmd    = 'irm ' + GW + '/install.ps1 | iex  # luego ingresa invite: ' + result.code +
+      '\n# O con el archivo: powershell -ExecutionPolicy Bypass -File install.ps1 ' + result.code
+
+    document.getElementById('cmd-linux').textContent = linuxCmd
+    document.getElementById('cmd-win').textContent   = winCmd
+    document.getElementById('invite-result').style.display = ''
+
+    document.getElementById('new-username').value = ''
+    loadStatus()
+    showToast('Invite creado para ' + result.username)
+  } catch (e) {
+    err.textContent = e.message
+    err.classList.add('show')
+  }
+}
+
+function copyCode(id, btn) {
+  const text = document.getElementById(id).textContent
+  navigator.clipboard.writeText(text).then(() => {
+    const orig = btn.textContent
+    btn.textContent = 'copiado!'
+    setTimeout(() => btn.textContent = orig, 1500)
+  })
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+function loadAll() {
+  loadStatus()
+  loadPCs()
+  setInterval(loadStatus, 30000)
+}
+
+// Auto-login if token in sessionStorage
+if (TOKEN) {
+  api('GET', '/status')
+    .then(() => {
+      document.getElementById('login').style.display = 'none'
+      document.getElementById('dashboard').style.display = 'flex'
+      loadAll()
+    })
+    .catch(() => {
+      sessionStorage.removeItem('admin_token')
+      TOKEN = ''
+    })
+}
+</script>
+</body>
+</html>

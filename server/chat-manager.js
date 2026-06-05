@@ -29,27 +29,36 @@ const SPAWN_QUICK_FAIL_MS = 1500           // detect immediate ENOENT/EACCES fai
 // (fnm/nvm/asdf) bin dirs, so `spawn('claude', …)` would ENOENT. Try common
 // locations and fall back to asking a login shell.
 function resolveClaudeBinary() {
+  const isWin = process.platform === 'win32'
   const candidates = [
     process.env.CLAUDE_BIN,
-    path.join(HOME, '.local/bin/claude'),
-    path.join(HOME, '.npm-global/bin/claude'),
-    path.join(HOME, '.fnm/current/bin/claude'),
-    path.join(HOME, '.bun/bin/claude'),
-    '/usr/local/bin/claude',
-    '/usr/bin/claude',
+    // Windows — npm global installs
+    isWin && path.join(HOME, 'AppData', 'Roaming', 'npm', 'claude.cmd'),
+    isWin && path.join(HOME, 'AppData', 'Roaming', 'npm', 'claude'),
+    isWin && path.join(process.env.APPDATA || '', 'npm', 'claude.cmd'),
+    // Linux/macOS
+    !isWin && path.join(HOME, '.local/bin/claude'),
+    !isWin && path.join(HOME, '.npm-global/bin/claude'),
+    !isWin && path.join(HOME, '.fnm/current/bin/claude'),
+    !isWin && path.join(HOME, '.bun/bin/claude'),
+    !isWin && '/usr/local/bin/claude',
+    !isWin && '/usr/bin/claude',
   ].filter(Boolean)
   for (const c of candidates) {
     try { if (fs.statSync(c).isFile()) return c } catch {}
   }
-  try {
-    const out = execSync('bash -lc "command -v claude"', { encoding: 'utf8' }).trim()
-    if (out && fs.existsSync(out)) return out
-  } catch {}
+  if (process.platform !== 'win32') {
+    try {
+      const out = execSync('bash -lc "command -v claude"', { encoding: 'utf8' }).trim()
+      if (out && fs.existsSync(out)) return out
+    } catch {}
+  }
   return 'claude'  // last resort, will ENOENT and the caller surfaces it
 }
 const CLAUDE_BIN = resolveClaudeBinary()
 // Augment PATH so subprocess can find aux tools (ripgrep, jq, etc.) too.
 const SHELL_PATH = (() => {
+  if (process.platform === 'win32') return process.env.PATH
   try {
     return execSync('bash -lc "echo -n $PATH"', { encoding: 'utf8' }).trim() || process.env.PATH
   } catch { return process.env.PATH }

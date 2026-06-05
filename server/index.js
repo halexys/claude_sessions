@@ -1,11 +1,21 @@
+const path = require('path');
+const fs = require('fs');
+
+// Load .env from the server directory if env vars are not already set.
+// Needed on Windows where Task Scheduler doesn't pass an EnvironmentFile.
+const dotenvPath = path.join(__dirname, '.env');
+if (fs.existsSync(dotenvPath)) {
+  fs.readFileSync(dotenvPath, 'utf8').split('\n').forEach(line => {
+    const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2].trim();
+  });
+}
+
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
-const pty = require('node-pty');
 const { execSync, exec, execFileSync } = require('child_process');
-const path = require('path');
-const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
@@ -213,18 +223,6 @@ async function sendPush(title, body) {
   ));
 }
 
-// Session monitor: only handles pty exit (session termination push).
-// Permission and response notifications are handled by Claude Code hooks.
-function createSessionMonitor(sessionName) {
-  function onData(_raw) {}
-
-  function onExit() {
-    sendPush(`Sesión terminada — ${sessionName}`, sessionName).catch(() => {});
-  }
-
-  return { onData, onExit };
-}
-
 // ─── Claude Code hook endpoint ────────────────────────────────────────────────
 // Called by ~/.claude/hooks/push.sh (localhost only, no auth token needed).
 
@@ -250,96 +248,6 @@ app.post('/api/hook/:event', express.json(), (req, res) => {
 // Apply auth to all /api routes
 app.use('/api', requireAuth);
 
-// GET /api/sessions — list tmux sessions
-app.get('/api/sessions', (req, res) => {
-  try {
-    const output = execFileSync(
-      'tmux',
-      ['list-sessions', '-F', '#{session_name}|#{session_activity}|#{pane_current_path}|#{window_activity_flag}'],
-      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
-    ).trim();
-
-    if (!output) return res.json([]);
-
-    const sessions = output
-      .split('\n')
-      .filter(Boolean)
-      .map(line => {
-        const [name, activity, currentPath, activityFlag] = line.split('|');
-        return {
-          name: name || '',
-          activity: parseInt(activity, 10) || 0,
-          currentPath: currentPath || HOME,
-          activityFlag: activityFlag === '1'
-        };
-      });
-
-    res.json(sessions);
-  } catch (err) {
-    // tmux exits with code 1 when no sessions exist
-    if (err.status === 1 || (err.stderr && err.stderr.includes('no server running'))) {
-      return res.json([]);
-    }
-    if (err.stderr && err.stderr.includes('no sessions')) {
-      return res.json([]);
-    }
-    res.json([]);
-  }
-});
-
-// POST /api/sessions — create a new tmux session running claude
-app.post('/api/sessions', (req, res) => {
-  let { name, folder, resumeId, skipPermissions } = req.body || {};
-
-  if (!name || name.trim() === '') {
-    name = `session-${Date.now()}`;
-  } else {
-    name = name.trim();
-  }
-
-  // Restrict session name to safe characters
-  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name)) {
-    return res.status(400).json({ error: 'Invalid session name: only letters, numbers, - and _ allowed' });
-  }
-
-  // resumeId must be a Claude session UUID (hex + hyphens)
-  if (resumeId && !/^[a-f0-9-]{36,72}$/.test(resumeId)) {
-    return res.status(400).json({ error: 'Invalid resume ID' });
-  }
-
-  const cwd = folder && fs.existsSync(folder) ? folder : HOME;
-  const args = ['claude'];
-  if (resumeId) args.push('--resume', resumeId);
-  if (skipPermissions) args.push('--dangerously-skip-permissions');
-  const command = args.join(' ');
-
-  // Check if session already exists
-  try {
-    execFileSync('tmux', ['has-session', '-t', name], { stdio: 'pipe' });
-    return res.status(409).json({ error: `Session "${name}" already exists` });
-  } catch (_) {}
-
-  try {
-    execFileSync('tmux', ['new-session', '-d', '-s', name, '-c', cwd, command], { encoding: 'utf8' });
-    res.json({ ok: true, name });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// DELETE /api/sessions/:name — kill a tmux session
-app.delete('/api/sessions/:name', (req, res) => {
-  const { name } = req.params;
-  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name)) {
-    return res.status(400).json({ error: 'Invalid session name' });
-  }
-  try {
-    execFileSync('tmux', ['kill-session', '-t', name], { encoding: 'utf8' });
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
 // GET /api/read-file?path=... — read a file under HOME for the "view" links
 // that the app overlays on assistant messages.
@@ -407,39 +315,6 @@ app.post('/api/upload-image', (req, res) => {
     res.json({ path: filepath });
   } catch (err) {
     res.status(500).json({ error: err.message });
-  }
-});
-
-// GET /api/claude-sessions — list past Claude Code conversations
-app.get('/api/claude-sessions', (req, res) => {
-  const projectsDir = path.join(HOME, '.claude', 'projects');
-  const sessions = [];
-  try {
-    for (const project of fs.readdirSync(projectsDir)) {
-      const projectPath = path.join(projectsDir, project);
-      if (!fs.statSync(projectPath).isDirectory()) continue;
-      for (const file of fs.readdirSync(projectPath).filter(f => f.endsWith('.jsonl'))) {
-        try {
-          const lines = fs.readFileSync(path.join(projectPath, file), 'utf8')
-            .split('\n').filter(Boolean);
-          let title = null, lastPrompt = null, cwd = null, ts = null;
-          for (const line of lines) {
-            try {
-              const d = JSON.parse(line);
-              if (d.type === 'ai-title' && d.aiTitle) title = d.aiTitle;
-              if (d.type === 'last-prompt' && d.lastPrompt) lastPrompt = d.lastPrompt;
-              if (!cwd && d.cwd) cwd = d.cwd;
-              if (d.timestamp) ts = d.timestamp;
-            } catch {}
-          }
-          if (cwd) sessions.push({ id: file.replace('.jsonl', ''), cwd, title, lastPrompt, ts });
-        } catch {}
-      }
-    }
-    sessions.sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));
-    res.json(sessions.slice(0, 100));
-  } catch {
-    res.json([]);
   }
 });
 
@@ -736,83 +611,6 @@ app.get('*', (req, res) => {
   } else {
     res.status(404).send('Frontend not built. Run build.sh first.');
   }
-});
-
-// ─── Socket.io /terminal ─────────────────────────────────────────────────────
-
-const terminal = io.of('/terminal');
-
-terminal.on('connection', (socket) => {
-  let ptyProcess = null;
-  let sessionName = null;
-
-  console.log(`[terminal] client connected: ${socket.id} (${socket.device?.name})`);
-
-  socket.on('attach', ({ session }) => {
-    if (!session) {
-      socket.emit('error', 'No session name provided');
-      return;
-    }
-
-    sessionName = session;
-
-    try {
-      execFileSync('tmux', ['has-session', '-t', session], { stdio: 'pipe' });
-    } catch (_) {
-      socket.emit('error', `Session "${session}" not found`);
-      return;
-    }
-
-    try {
-      ptyProcess = pty.spawn('tmux', ['attach', '-t', session], {
-        name: 'xterm-256color',
-        cols: 80,
-        rows: 24,
-        cwd: HOME,
-        env: process.env
-      });
-
-      ptyProcess.onData((data) => {
-        socket.emit('output', data);
-      });
-
-      ptyProcess.onExit(() => {
-        console.log(`[terminal] pty exited for session: ${session}`);
-        sendPush(`Sesión terminada — ${session}`, session).catch(() => {});
-        socket.emit('session-exit');
-        socket.disconnect(true);
-      });
-
-      console.log(`[terminal] attached to tmux session: ${session}`);
-    } catch (err) {
-      console.error(`[terminal] spawn error:`, err.message);
-      socket.emit('error', `Failed to attach to session: ${err.message}`);
-    }
-  });
-
-  socket.on('input', (data) => {
-    if (ptyProcess) {
-      try { ptyProcess.write(data); } catch (err) {
-        console.error('[terminal] write error:', err.message);
-      }
-    }
-  });
-
-  socket.on('resize', ({ cols, rows }) => {
-    if (ptyProcess) {
-      try { ptyProcess.resize(cols, rows); } catch (err) {
-        console.error('[terminal] resize error:', err.message);
-      }
-    }
-  });
-
-  socket.on('disconnect', () => {
-    console.log(`[terminal] client disconnected: ${socket.id}`);
-    if (ptyProcess) {
-      try { ptyProcess.kill(); } catch (_) {}
-      ptyProcess = null;
-    }
-  });
 });
 
 // ─── /chat namespace — headless Claude Code over WebSocket ───────────────────
