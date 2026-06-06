@@ -142,6 +142,24 @@ while (`$true) {
 }
 "@ | Set-Content $tunnelPs1 -Encoding UTF8
 
+# ── Watchdog script ──────────────────────────────────────────────────────────
+$watchdogPs1 = Join-Path $INSTALL_DIR "watchdog.ps1"
+@"
+# Watchdog: each 5 minutes checks that node server and SSH tunnel are alive.
+# Managed as a separate Task Scheduler task so it recovers the others if they die.
+while (`$true) {
+    Start-Sleep 300
+    `$listening = (netstat -an 2>`$null) | Where-Object { `$_ -match '0\.0\.0\.0:3001\s+.*LISTENING' }
+    if (-not `$listening) {
+        Start-ScheduledTask -TaskName 'ClaudeMobile' -ErrorAction SilentlyContinue
+    }
+    `$sshProc = Get-Process -Name ssh -ErrorAction SilentlyContinue
+    if (-not `$sshProc) {
+        Start-ScheduledTask -TaskName 'ClaudeTunnel' -ErrorAction SilentlyContinue
+    }
+}
+"@ | Set-Content $watchdogPs1 -Encoding UTF8
+
 # ── Startup folder launchers (no admin required) ─────────────────────────────
 Write-Host "Configurando inicio automatico..."
 
@@ -165,6 +183,11 @@ CreateObject("WScript.Shell").Run """$nodeBin"" ""$INSTALL_DIR\index.js""", 0, F
 # ClaudeTunnel.vbs — launches SSH tunnel PowerShell script hidden
 [System.IO.File]::WriteAllText("$STARTUP\ClaudeTunnel.vbs", @"
 CreateObject("WScript.Shell").Run "powershell.exe -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File ""$tunnelPs1""", 0, False
+"@, $noBom)
+
+# ClaudeWatchdog.vbs — watchdog que relanza los servicios si se caen
+[System.IO.File]::WriteAllText("$STARTUP\ClaudeWatchdog.vbs", @"
+CreateObject("WScript.Shell").Run "powershell.exe -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File ""$watchdogPs1""", 0, False
 "@, $noBom)
 
 # ── Claude Code hooks ─────────────────────────────────────────────────────────
@@ -233,6 +256,10 @@ Start-Sleep 3
 Start-Process "powershell.exe" -ArgumentList "-NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$tunnelPs1`"" `
     -WindowStyle Hidden
 Write-Host "  claude-tunnel iniciado"
+
+Start-Process "powershell.exe" -ArgumentList "-NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$watchdogPs1`"" `
+    -WindowStyle Hidden
+Write-Host "  claude-watchdog iniciado"
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 Write-Host ""
