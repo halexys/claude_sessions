@@ -148,7 +148,7 @@ $watchdogPs1 = Join-Path $INSTALL_DIR "watchdog.ps1"
 # Watchdog: each 5 minutes checks that node server and SSH tunnel are alive.
 # Managed as a separate Task Scheduler task so it recovers the others if they die.
 while (`$true) {
-    Start-Sleep 300
+    Start-Sleep 60
     `$listening = (netstat -an 2>`$null) | Where-Object { `$_ -match '0\.0\.0\.0:3001\s+.*LISTENING' }
     if (-not `$listening) {
         Start-ScheduledTask -TaskName 'ClaudeMobile' -ErrorAction SilentlyContinue
