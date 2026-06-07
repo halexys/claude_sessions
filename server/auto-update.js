@@ -1,15 +1,16 @@
 // auto-update.js — pulls the server tarball from the gateway when a newer
 // version is published and triggers a graceful restart.
 //
-// Strategy: only runs under systemd (Restart=always handles the relaunch),
-// only updates when the chat session manager is idle, and never overwrites
-// itself mid-turn. Failures are logged and retried on the next interval.
+// Strategy: needs something to relaunch us after we exit — systemd
+// (Restart=always) on Linux, or Task Scheduler on Windows. Only updates when
+// the chat session manager is idle, and never overwrites itself mid-turn.
+// Failures are logged and retried on the next interval.
 
 const fs = require('fs')
 const path = require('path')
 const os = require('os')
 const crypto = require('crypto')
-const { execFileSync } = require('child_process')
+const { execFileSync, spawn } = require('child_process')
 
 const PKG = require('./package.json')
 const LOCAL_VERSION = PKG.version || '0.0.0'
@@ -53,10 +54,30 @@ function extractTarball(tmp) {
   execFileSync('tar', ['-xzf', tmp, '-C', INSTALL_DIR, '--strip-components=1'], { stdio: 'pipe' })
 }
 
-function inSystemd() {
-  // Set by systemd for every service invocation. Without it we have nothing
-  // to restart us, so we must not exit.
-  return !!process.env.INVOCATION_ID
+// Name of the Windows scheduled task that owns this process (see
+// register-tasks.ps1 / install.ps1). Overridable for non-default installs.
+const WIN_TASK_NAME = process.env.WIN_TASK_NAME || 'ClaudeMobile'
+
+// What will relaunch us after process.exit? 'systemd' on Linux services,
+// 'tasksched' on Windows under Task Scheduler, or null if we have no way back
+// (in which case we must NOT exit — there'd be nothing to restart us).
+function restartMode() {
+  if (process.env.INVOCATION_ID) return 'systemd'       // set by systemd per invocation
+  if (process.platform === 'win32') return 'tasksched'  // Task Scheduler + watchdog
+  return null
+}
+
+// Task Scheduler only auto-restarts on *failure*, not on a clean exit, and the
+// watchdog poll can lag up to a minute. So before exiting we spawn a detached
+// helper that outlives us, waits for the port to free, and re-runs the task.
+function scheduleWindowsRestart() {
+  const ps = `Start-Sleep -Seconds 3; Start-ScheduledTask -TaskName '${WIN_TASK_NAME}'`
+  const child = spawn(
+    'powershell',
+    ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', ps],
+    { detached: true, stdio: 'ignore', windowsHide: true }
+  )
+  child.unref()
 }
 
 function isIdle(chatSessions) {
@@ -101,7 +122,8 @@ async function checkOnce() {
 async function applyUpdate({ chatSessions, force = false } = {}) {
   if (!pendingUpdate) await checkOnce()
   if (!pendingUpdate) throw new Error('no update available')
-  if (!inSystemd()) throw new Error('not running under systemd (no auto-restart)')
+  const restart = restartMode()
+  if (!restart) throw new Error('no auto-restart mechanism (not systemd, not Windows Task Scheduler)')
   if (!isIdle(chatSessions) && !force) {
     throw new Error('chat sessions are active — pass force:true to kill them and update')
   }
@@ -111,6 +133,8 @@ async function applyUpdate({ chatSessions, force = false } = {}) {
   console.log(`[auto-update] applying ${LOCAL_VERSION} -> ${pendingUpdate.version}`)
   const tmp = await downloadTarball()
   try { extractTarball(tmp) } finally { try { fs.unlinkSync(tmp) } catch {} }
+  // systemd respawns us on exit; Windows needs an explicit kick first.
+  if (restart === 'tasksched') scheduleWindowsRestart()
   setTimeout(() => process.exit(0), 200)
 }
 

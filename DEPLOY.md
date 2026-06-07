@@ -113,6 +113,22 @@ may take a few seconds while that happens. Visit
 `https://claude.you.tech/install.sh` once it's up — you should see the
 installer script returned as text.
 
+> **⚠️ Gotcha — keep static files static.** `server.tar.gz`, `install.sh` and
+> `install.ps1` are **static files** served by the catch-all `file_server`.
+> Do **not** add explicit `handle /server.tar.gz { reverse_proxy localhost:3000 }`
+> blocks (same for the install scripts) — the gateway has no route for them, so
+> they return a 404 HTML page. That silently breaks the server auto-update
+> (clients download 152 bytes of HTML and `tar -xzf` fails) and fresh installs.
+> A direct hand-edit of `/etc/caddy/Caddyfile` on the VPS drifted into exactly
+> this once; the repo template (`deploy/Caddyfile`) is the source of truth —
+> verify with `curl -I https://your.domain/server.tar.gz` (expect
+> `200 application/gzip`, not a 404). Quick check after any Caddy edit:
+> ```bash
+> for p in /server.tar.gz /install.sh /install.ps1 /version.json; do
+>   curl -sI "https://your.domain$p" | head -1
+> done   # all must be 200
+> ```
+
 ---
 
 ## 6. VPS: static assets directory
@@ -224,6 +240,15 @@ password, done.
 ---
 
 ## 9. Updating
+
+> **Two independent version lines.** `version.json` carries `latest` (the
+> **APK** version, compared against the app's bundled `__APP_VERSION__`) and
+> `server` (the **PC server** version, compared against `server/package.json`).
+> They evolve separately and need not match — bumping the server does not
+> require an APK rebuild, and vice versa. They may happen to coincide at a
+> given moment, but don't rely on it: when updating the server bump only
+> `server`; when shipping a new APK bump only `latest`. Each drives its own
+> in-app banner.
 
 ### Updating the server tarball
 

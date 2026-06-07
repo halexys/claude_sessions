@@ -64,34 +64,77 @@ const SHELL_PATH = (() => {
   } catch { return process.env.PATH }
 })()
 
-// Encode a cwd into the project-dir name Claude Code uses (replace `/` with `-`)
-function projectDir(cwd) { return cwd.replace(/\//g, '-') }
+// Encode a cwd into the project-dir name Claude Code uses. Claude replaces
+// every non-alphanumeric char with `-`, so this must cover Windows paths too
+// (`C:\Users\me\app` → `C--Users-me-app`), not just POSIX `/` separators.
+function projectDir(cwd) { return cwd.replace(/[^a-zA-Z0-9]/g, '-') }
 function sessionJsonlPath(cwd, sessionId) {
   return path.join(PROJECTS_DIR, projectDir(cwd), `${sessionId}.jsonl`)
 }
 
-// Is a claude process currently running for this session? Walks /proc to
-// avoid shelling out. Used to distinguish a genuine duplicate from a stale
-// lock left over by a previous unclean exit.
-function isSessionActive(sessionId) {
+// Read the real cwd straight out of a session JSONL. The encoded project-dir
+// name is lossy and ambiguous (a `-` could have been `/`, `\`, `:` or `_`), so
+// decoding it back to a path is unreliable — fatal on Windows. Every Claude
+// record carries an exact `"cwd"` field; trust that instead. Returns null if
+// no record has one (e.g. an empty/legacy file).
+function cwdFromJsonl(filePath) {
   try {
-    for (const pid of fs.readdirSync('/proc')) {
-      if (!/^\d+$/.test(pid)) continue
+    const lines = fs.readFileSync(filePath, 'utf8').split('\n')
+    for (const line of lines) {
+      if (!line.includes('"cwd"')) continue
       try {
-        const cmd = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8')
-        if (cmd.includes('claude') && cmd.includes(sessionId)) return true
+        const d = JSON.parse(line)
+        if (d && typeof d.cwd === 'string' && d.cwd) return d.cwd
       } catch {}
     }
+  } catch {}
+  return null
+}
+
+// Is a claude process currently running for this session? Used to distinguish
+// a genuine duplicate from a stale lock left by a previous unclean exit.
+// Linux walks /proc (no shell-out). macOS/Windows have no /proc, so we query
+// the process list once via ps/PowerShell — matching the session UUID alone is
+// enough since it's unique to the claude child's argv. A previous version only
+// handled /proc and silently returned false everywhere else, which made the
+// caller delete locks held by a live process on macOS/Windows.
+function isSessionActive(sessionId) {
+  try {
+    if (process.platform === 'linux') {
+      for (const pid of fs.readdirSync('/proc')) {
+        if (!/^\d+$/.test(pid)) continue
+        try {
+          const cmd = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8')
+          if (cmd.includes('claude') && cmd.includes(sessionId)) return true
+        } catch {}
+      }
+      return false
+    }
+    if (process.platform === 'win32') {
+      // claude.cmd shells out to node, so match on the session id in any
+      // command line rather than a process name. Exclude our own PID ($PID):
+      // this query string itself contains the session id, so the querying
+      // PowerShell process would otherwise match itself.
+      const cmd = `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${sessionId}*' -and $_.ProcessId -ne $PID } | Select-Object -First 1 -ExpandProperty ProcessId`
+      const out = execSync(`powershell -NoProfile -NonInteractive -Command "${cmd}"`,
+        { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+      return /^\d+$/.test(out)
+    }
+    // macOS / other POSIX: ps shows the full argv.
+    const out = execSync('ps -axww -o command=', { encoding: 'utf8', timeout: 5000 })
+    return out.split('\n').some(l => l.includes('claude') && l.includes(sessionId))
   } catch {}
   return false
 }
 
-// Remove stale lock files that claude refuses to overwrite. Safe only when
-// no claude process is currently using the session.
+// Remove a stale lock file that claude refuses to overwrite. Skip the (costly)
+// process scan when there's no lock to clear — on Windows the lock is never
+// created, so this returns immediately and never shells out. Only delete once
+// we've confirmed no live claude owns the session.
 function clearStaleLocks(sessionId) {
+  const lockPath = path.join(HOME, '.claude', 'security', `security_warnings_state_${sessionId}.lock`)
+  if (!fs.existsSync(lockPath)) return
   if (isSessionActive(sessionId)) return
-  const lockDir = path.join(HOME, '.claude', 'security')
-  const lockPath = path.join(lockDir, `security_warnings_state_${sessionId}.lock`)
   try { fs.unlinkSync(lockPath) } catch {}
 }
 
@@ -392,8 +435,9 @@ class SessionManager extends EventEmitter {
         if (!e.isDirectory()) continue
         const f = path.join(PROJECTS_DIR, e.name, `${sessionId}.jsonl`)
         if (fs.existsSync(f)) {
-          // Decode project name back to cwd (`-tmp` → `/tmp`, `-home-hal` → `/home/hal`)
-          const cwd = '/' + e.name.replace(/^-+/, '').replace(/-/g, '/')
+          // Prefer the exact cwd recorded inside the JSONL; only fall back to
+          // the lossy dir-name decode (POSIX-only) if the file has no cwd.
+          const cwd = cwdFromJsonl(f) || ('/' + e.name.replace(/^-+/, '').replace(/-/g, '/'))
           return { cwd, jsonl: f }
         }
       }
@@ -467,7 +511,8 @@ function listChats({ limit = 30, offset = 0 } = {}) {
       hasMore: offset + slice.length < all.length,
       chats: slice.map(e => {
         const s = summariseJsonl(e.full) || {}
-        return { id: e.id, cwd: e.cwd, ...s }
+        // Prefer the exact cwd from inside the JSONL over the lossy dir decode.
+        return { id: e.id, ...s, cwd: s.cwd || e.cwd }
       }),
     }
   } catch {
@@ -492,12 +537,13 @@ function extractText(content) {
 // Also extracts `entrypoint` (cli vs sdk-*) so the UI can group agent runs
 // separately from user-initiated chats.
 function summariseJsonl(filePath) {
-  let title = null, lastUserText = null, lastAssistantText = null, ts = null, entrypoint = null
+  let title = null, lastUserText = null, lastAssistantText = null, ts = null, entrypoint = null, cwd = null
   try {
     const lines = fs.readFileSync(filePath, 'utf8').split('\n').filter(Boolean)
     for (const line of lines) {
       try {
         const d = JSON.parse(line)
+        if (!cwd && typeof d.cwd === 'string' && d.cwd) cwd = d.cwd
         if (!entrypoint && d.entrypoint) entrypoint = d.entrypoint
         if (d.type === 'ai-title' && d.aiTitle) title = d.aiTitle
         if (d.type === 'last-prompt' && d.lastPrompt) lastUserText = d.lastPrompt
@@ -512,7 +558,7 @@ function summariseJsonl(filePath) {
         }
       } catch {}
     }
-    return { title, lastUserText, lastAssistantText, ts, entrypoint }
+    return { title, lastUserText, lastAssistantText, ts, entrypoint, cwd }
   } catch {
     return null
   }
@@ -531,11 +577,13 @@ function readHistory(sessionId, { limit = 50, before = 0 } = {}) {
       if (!dir.isDirectory()) continue
       const f = path.join(PROJECTS_DIR, dir.name, `${sessionId}.jsonl`)
       if (!fs.existsSync(f)) continue
-      const cwd = '/' + dir.name.replace(/^-+/, '').replace(/-/g, '/')
+      let cwd = '/' + dir.name.replace(/^-+/, '').replace(/-/g, '/')
       const lines = fs.readFileSync(f, 'utf8').split('\n').filter(Boolean)
       for (const line of lines) {
         try {
           const d = JSON.parse(line)
+          // The recorded cwd is exact; the dir-decode above is only a fallback.
+          if (typeof d.cwd === 'string' && d.cwd) cwd = d.cwd
           if (d.type === 'user' && d.message?.content) {
             const content = d.message.content
             if (typeof content === 'string') {

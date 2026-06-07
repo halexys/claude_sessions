@@ -8,6 +8,13 @@
 #   are proxied to the Node gateway (localhost:3000).
 #   Everything else is served as static files from /var/www/claude-mobile
 #   (the React app bundle, version.json, app.apk, install.sh, server.tar.gz).
+#
+# ⚠️  Do NOT add `handle /server.tar.gz { reverse_proxy localhost:3000 }`
+#     (or the same for /install.sh, /install.ps1). The gateway has NO route
+#     for those — proxying them returns a 404 HTML page, which breaks the
+#     auto-update download (`tar -xzf` on 152 bytes of HTML) and fresh
+#     installs. They are STATIC files; let them fall through to file_server
+#     below. A hand-edit on the VPS drifted into this once and broke updates.
 
 claude.example.com {
     encode gzip zstd

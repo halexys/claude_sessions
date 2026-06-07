@@ -36,8 +36,23 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: isAllowedOrigin, methods: ['GET', 'POST'] },
-  pingInterval: 5000,   // detect dead connections in 5s instead of 25s
-  pingTimeout:  3000,   // wait 3s for pong instead of 20s
+  // Heartbeat: lenient on purpose. The old 5s/3s declared mobile connections
+  // dead on any latency spike >3s (congested cellular, backgrounded app with
+  // throttled timers), causing constant false reconnects. ~45s of silence is
+  // tolerated before a drop; genuinely dead sockets still recover via the
+  // client's infinite reconnect + JSONL re-fetch.
+  pingInterval: 25000,
+  pingTimeout:  20000,
+  // A `send` carries text + base64 image(s). The 1 MB default would drop the
+  // packet and kill the socket when a couple of photos are attached.
+  maxHttpBufferSize: 16 * 1024 * 1024,
+  // Replay events missed during a brief disconnect (incl. in-flight assistant
+  // stream chunks) instead of losing them until the turn lands in the JSONL.
+  // Auth middleware re-runs on recovery (skipMiddlewares: false).
+  connectionStateRecovery: {
+    maxDisconnectionDuration: 2 * 60 * 1000,
+    skipMiddlewares: false,
+  },
 });
 
 const PORT = process.env.PORT || 3001;
@@ -400,7 +415,9 @@ app.post('/api/chat/sessions', (req, res) => {
   const { folder, model, permissionMode } = req.body || {};
   const cwd = folder && fs.existsSync(folder) ? folder : HOME;
   const id  = chatMgr.newSessionId();
-  try { fs.mkdirSync(path.join(HOME, '.claude', 'projects', cwd.replace(/\//g, '-')), { recursive: true }); } catch {}
+  // Use the shared encoder (handles Windows paths too) instead of a POSIX-only
+  // slash replace, so the pre-created dir matches the one Claude will use.
+  try { fs.mkdirSync(path.dirname(chatMgr.sessionJsonlPath(cwd, id)), { recursive: true }); } catch {}
   const pm = chatMgr.ALLOWED_PERMISSION_MODES.includes(permissionMode)
     ? permissionMode : chatMgr.DEFAULT_PERMISSION_MODE;
   pendingNewChats.set(id, { cwd, model: model || null, permissionMode: pm });
