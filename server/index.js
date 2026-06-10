@@ -771,21 +771,28 @@ chat.on('connection', (socket) => {
 // ─── Start ───────────────────────────────────────────────────────────────────
 
 async function registerWithGateway() {
-  const gatewayUrl   = process.env.GATEWAY_URL;
-  const setupSecret  = process.env.SETUP_SECRET;
-  const tunnelPort   = process.env.TUNNEL_PORT || '8765';
+  const gatewayUrl  = process.env.GATEWAY_URL;
+  const setupSecret = process.env.SETUP_SECRET;
+  const tunnelPort  = process.env.TUNNEL_PORT || '8765';
   if (!gatewayUrl || !setupSecret) return;
   const passwordHash = crypto.createHash('sha256').update(MASTER_PASSWORD).digest('hex');
-  try {
-    const res = await fetch(`${gatewayUrl}/setup`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Setup-Secret': setupSecret },
-      body:    JSON.stringify({ passwordHash, tunnelPort: parseInt(tunnelPort), pcId: os.hostname() }),
-    });
-    if (res.ok) console.log(`[gateway] registered on port ${tunnelPort}`);
-    else        console.error('[gateway] registration failed:', res.status);
-  } catch (err) {
-    console.error('[gateway] registration error:', err.message);
+  const body = JSON.stringify({ passwordHash, tunnelPort: parseInt(tunnelPort), pcId: os.hostname() });
+  const delays = [5, 15, 30, 60, 120]; // seconds between retries
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      const res = await fetch(`${gatewayUrl}/setup`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Setup-Secret': setupSecret },
+        body,
+      });
+      if (res.ok) { console.log(`[gateway] registered on port ${tunnelPort}`); return; }
+      console.error('[gateway] registration failed:', res.status);
+    } catch (err) {
+      console.error('[gateway] registration error:', err.message);
+    }
+    if (attempt < delays.length) {
+      await new Promise(r => setTimeout(r, delays[attempt] * 1000));
+    }
   }
 }
 
